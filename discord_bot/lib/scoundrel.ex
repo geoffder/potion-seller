@@ -33,8 +33,8 @@ defmodule Bot.Scoundrel do
             "Azazel root contents:\n```[#{Enum.join(dir_contents, ", ")}]```"
           )
 
-        "role" ->
-          {name, color} = process_role_args(args)
+        "transition" ->
+          {name, color} = process_transition_args(args)
 
           {:ok, role} =
             Api.create_guild_role(
@@ -43,11 +43,38 @@ defmodule Bot.Scoundrel do
               color: color
             )
 
-          # TODO:
-          # check if the user already has a non-everyone role with permissions
-          # equivalent to @everyone. If they do, remove it before adding the
-          # new one.
-          # IO.puts(inspect(Api.get_guild_roles(msg.guild_id)))
+          guild_roles = Api.get_guild_roles!(msg.guild_id)
+
+          # return list of structs for roles user belongs to.
+          member_roles =
+            Enum.filter(
+              guild_roles,
+              fn role ->
+                List.foldr(
+                  Enum.map(msg.member.roles, &(&1 == role.id)),
+                  false,
+                  &or/2
+                )
+              end
+            )
+
+          everyone = get_first_item(guild_roles, :name, "@everyone")
+          member_roles = List.delete(member_roles, everyone)
+
+          case length(member_roles) > 0 do
+            true ->
+              old_role =
+                get_all_items(
+                  member_roles,
+                  :permissions,
+                  everyone.permissions
+                )
+
+              delete_roles(msg.guild_id, old_role)
+
+            false ->
+              :do_nothing
+          end
 
           {:ok} =
             Api.modify_guild_member(
@@ -73,7 +100,7 @@ defmodule Bot.Scoundrel do
     :noop
   end
 
-  defp process_role_args(args) when length(args) == 2 do
+  defp process_transition_args(args) when length(args) == 2 do
     name =
       args
       |> List.first()
@@ -91,8 +118,44 @@ defmodule Bot.Scoundrel do
     {name, color}
   end
 
-  defp prune_roles(guild_id) do
-    # This function will be used to clear out ununsed roles from the server.
-    IO.puts(inspect(Api.list_guild_members(guild_id, limit: 1000)))
+  defp delete_roles(_guild_id, tail) when tail == [], do: :ok
+
+  defp delete_roles(guild_id, roles) when is_list(roles) do
+    [role | rest] = roles
+    Api.delete_guild_role!(guild_id, role.id)
+    delete_roles(guild_id, rest)
+  end
+
+  defp delete_roles(guild_id, role) do
+    Api.delete_guild_role!(guild_id, role.id)
+  end
+
+  defp get_first_item(tail, _key, _value) when tail == [], do: :not_found
+
+  defp get_first_item(list, key, value) do
+    [item | rest] = list
+
+    case item == [] or Map.get(item, key) == value do
+      true ->
+        item
+
+      false ->
+        get_first_item(rest, key, value)
+    end
+  end
+
+  defp get_all_items(list, key, value, out \\ [])
+  defp get_all_items(tail, _key, _value, out) when tail == [], do: out
+
+  defp get_all_items(list, key, value, out) do
+    [item | rest] = list
+
+    case Map.get(item, key) == value do
+      true ->
+        get_all_items(rest, key, value, [item | out])
+
+      false ->
+        get_all_items(rest, key, value, out)
+    end
   end
 end
