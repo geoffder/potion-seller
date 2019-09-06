@@ -36,55 +36,20 @@ defmodule Bot.Scoundrel do
         "transition" ->
           {name, color} = process_transition_args(args)
 
-          {:ok, role} =
-            Api.create_guild_role(
-              msg.guild_id,
-              name: name,
-              color: color
-            )
+          role = create_color_role(msg.guild_id, name, color)
 
           guild_roles = Api.get_guild_roles!(msg.guild_id)
 
           # return list of structs for roles user belongs to.
-          member_roles =
-            Enum.filter(
+          member_roles = get_member_role_structs(msg.member.roles, guild_roles)
+
+          # remove existing superficial role(s)
+          {:ok, _} =
+            clean_up_member_roles(
+              member_roles,
               guild_roles,
-              fn role ->
-                List.foldr(
-                  Enum.map(msg.member.roles, &(&1 == role.id)),
-                  false,
-                  &or/2
-                )
-              end
+              msg.guild_id
             )
-
-          everyone = get_first_item(guild_roles, :name, "@everyone")
-          # remove base role @everyone, don't want to remove it.
-          member_roles = List.delete(member_roles, everyone)
-
-          case length(member_roles) > 0 do
-            true ->
-              # get old non-permissioned roles recursively
-              # old_role =
-              #   get_all_items(
-              #     member_roles,
-              #     :permissions,
-              #     everyone.permissions
-              #   )
-
-              # get old non-permissioned roles with filtered comprehension
-              old_roles =
-                for role <-
-                      member_roles,
-                    Map.get(role, :permissions) == everyone.permissions,
-                    do: role
-
-              # delete replaced non-permissioned roles from server
-              delete_roles(msg.guild_id, old_roles)
-
-            false ->
-              :do_nothing
-          end
 
           # add new role to user
           {:ok} =
@@ -129,12 +94,16 @@ defmodule Bot.Scoundrel do
     {name, color}
   end
 
+  defp process_transition_args(_args) do
+    :wrong_number_args
+  end
+
   defp delete_roles(guild_id, [role | rest]) do
     Api.delete_guild_role!(guild_id, role.id)
     delete_roles(guild_id, rest)
   end
 
-  defp delete_roles(_guild_id, []), do: :ok
+  defp delete_roles(_guild_id, []), do: {:ok, :deleted}
 
   defp get_first_item([item | rest], key, value) do
     case Map.get(item, key) == value do
@@ -161,4 +130,42 @@ defmodule Bot.Scoundrel do
   end
 
   defp get_all_items([], _key, _value, out), do: out
+
+  defp create_color_role(guild_id, name, color) do
+    {:ok, role} = Api.create_guild_role(guild_id, name: name, color: color)
+    role
+  end
+
+  defp get_member_role_structs(role_ids, guild_roles) do
+    id_match = fn role ->
+      role_ids
+      # compare member role ids to guild role
+      |> Enum.map(&(&1 == role.id))
+      # execute `or` operation on whole list (one true -> true)
+      |> List.foldr(false, &or/2)
+    end
+
+    Enum.filter(guild_roles, id_match)
+  end
+
+  defp clean_up_member_roles(member_roles, guild_roles, guild_id) do
+    # get @everyone guild role for comparison to user roles
+    everyone = get_first_item(guild_roles, :name, "@everyone")
+    # remove base role @everyone, only care about "generated" roles
+    member_roles = List.delete(member_roles, everyone)
+
+    case length(member_roles) > 0 do
+      true ->
+        dead_roles =
+          for role <- member_roles,
+              # filter for non-permissioned roles (name/color only)
+              Map.get(role, :permissions) == everyone.permissions,
+              do: role
+
+        delete_roles(guild_id, dead_roles)
+
+      false ->
+        {:ok, :already_clean}
+    end
+  end
 end
